@@ -3,12 +3,17 @@ from __future__ import annotations
 import json
 import re
 import struct
+import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
 SOURCE_DOC = Path(r"D:\document\ドーナドーナ\R6運用事例集全体版(目次付き).doc")
 TEXT_OUT = Path("extracted.txt")
 DATA_OUT = Path("app-data.js")
+LIFE_PROTECTION_LAW_ID = "325AC0000000144"
+LIFE_PROTECTION_API_URL = f"https://laws.e-gov.go.jp/api/1/lawdata/{LIFE_PROTECTION_LAW_ID}"
+LIFE_PROTECTION_XML = Path("life_protection_act.xml")
 
 END_OF_CHAIN = 0xFFFFFFFE
 FREE_SECTOR = 0xFFFFFFFF
@@ -129,6 +134,45 @@ def normalize_digits(text: str) -> str:
     return text.translate(str.maketrans("０１２３４５６７８９－―ー", "0123456789---"))
 
 
+def kanji_number_to_int(value: str) -> int | None:
+    digits = {"零": 0, "〇": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    value = value.strip()
+    if not value:
+        return None
+    if value.isdigit():
+        return int(value)
+    if value in digits:
+        return digits[value]
+    if "百" in value:
+        before, after = value.split("百", 1)
+        total = (digits.get(before, 1) if before else 1) * 100
+        rest = kanji_number_to_int(after)
+        return total + (rest or 0)
+    if "十" in value:
+        before, after = value.split("十", 1)
+        total = (digits.get(before, 1) if before else 1) * 10
+        rest = kanji_number_to_int(after)
+        return total + (rest or 0)
+    total = 0
+    for char in value:
+        if char not in digits:
+            return None
+        total = total * 10 + digits[char]
+    return total
+
+
+def article_number_variants(article_title: str) -> list[str]:
+    match = re.search(r"第([一二三四五六七八九十百〇零0-9０-９]+)条(の([一二三四五六七八九十百〇零0-9０-９]+))?", article_title)
+    if not match:
+        return []
+    main = kanji_number_to_int(normalize_digits(match.group(1)))
+    branch = kanji_number_to_int(normalize_digits(match.group(3) or ""))
+    if main is None:
+        return []
+    variants = [f"第{main}条", f"第{main}条の{branch}" if branch is not None else ""]
+    return [variant for variant in variants if variant]
+
+
 def find_references(text: str) -> list[str]:
     refs: list[str] = []
     seen: set[str] = set()
@@ -142,6 +186,12 @@ def find_references(text: str) -> list[str]:
     return refs[:18]
 
 
+def strip_front_matter(text: str) -> str:
+    """Drop the Word TOC and chapter guide before the first real Q&A item."""
+    match = re.search(r"(?m)^（問１－１）", text)
+    return text[match.start() :] if match else text
+
+
 def infer_chapter(title: str) -> str:
     match = re.search(r"問([0-9]+)", normalize_digits(title))
     if not match:
@@ -153,30 +203,67 @@ def clean_body(body: str) -> str:
     lines = []
     for line in body.splitlines():
         line = line.strip()
-        if not line or "HYPERLINK" in line or "PAGEREF" in line or line == "目　次":
+        if (
+            not line
+            or "HYPERLINK" in line
+            or "PAGEREF" in line
+            or "MERGEFORMAT" in line
+            or line == "目　次"
+        ):
             continue
         lines.append(line)
-    return "\n".join(lines).strip()
+    cleaned = "\n".join(lines).strip()
+    guide_index = cleaned.find("この章で扱う事項")
+    if guide_index >= 0:
+        prefix = cleaned[:guide_index]
+        chapter_index = prefix.rfind("\n第")
+        cleaned = cleaned[: chapter_index if chapter_index >= 0 else guide_index].strip()
+    for marker in ("\n参考資料", "\n生活保護関係主要判例", "\n海外渡航事例集"):
+        marker_index = cleaned.find(marker)
+        if marker_index >= 0:
+            cleaned = cleaned[:marker_index].strip()
+    reference_section = re.search(r"\n参\s*考\s*資\s*料", cleaned)
+    if reference_section:
+        cleaned = cleaned[: reference_section.start()].strip()
+    return cleaned
+
+
+def is_searchable_body(body: str) -> bool:
+    if len(body) < 20:
+        return False
+    if "この章で扱う事項" in body or "HYPERLINK" in body or "PAGEREF" in body:
+        return False
+    return True
 
 
 def build_items(text: str) -> list[dict[str, object]]:
     candidates: dict[str, dict[str, object]] = {}
+    text = strip_front_matter(text)
 
     matches = list(QUESTION_ANY_RE.finditer(text))
     for index, match in enumerate(matches):
         title = normalize_spaces(match.group(0))
         title = re.split(r"\s+PAGEREF|\s+HYPERLINK|", title)[0].strip()
-        if "参照" in title or "_Toc" in title or '"' in title or "INK" in title or len(title) > 80:
+        if (
+            "参照" in title
+            or "_Toc" in title
+            or '"' in title
+            or "INK" in title
+            or "削除" in title
+            or len(title) > 80
+        ):
             continue
         body_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         body = clean_body(text[match.end() : body_end])
-        if len(body) < 8 and "削除" not in title:
-            body = ""
+        if not is_searchable_body(body):
+            continue
         refs = find_references(body)
         item = {
             "id": title.split("）", 1)[0] + "）",
             "title": title,
             "chapter": infer_chapter(title),
+            "sourceType": "case",
+            "sourceUrl": "",
             "body": body,
             "references": refs,
         }
@@ -243,13 +330,75 @@ def build_items(text: str) -> list[dict[str, object]]:
     return fallback_items
 
 
+def fetch_life_protection_xml() -> str:
+    request = urllib.request.Request(
+        LIFE_PROTECTION_API_URL,
+        headers={"User-Agent": "legal-basis-search-app/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            xml_text = response.read().decode("utf-8")
+        LIFE_PROTECTION_XML.write_text(xml_text, encoding="utf-8")
+        return xml_text
+    except Exception:
+        if LIFE_PROTECTION_XML.exists():
+            return LIFE_PROTECTION_XML.read_text(encoding="utf-8")
+        raise
+
+
+def clean_law_text(text: str) -> str:
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def build_life_protection_law_items() -> list[dict[str, object]]:
+    xml_text = fetch_life_protection_xml()
+    root = ET.fromstring(xml_text)
+    items: list[dict[str, object]] = []
+    for article in root.findall(".//MainProvision//Article"):
+        title = clean_law_text("".join(article.findtext("ArticleTitle", default="")))
+        if not title:
+            continue
+        caption = clean_law_text(article.findtext("ArticleCaption", default=""))
+        body_lines: list[str] = []
+        for paragraph in article.findall("./Paragraph"):
+            paragraph_text = clean_law_text("".join(paragraph.itertext()))
+            if paragraph_text and paragraph_text not in body_lines:
+                body_lines.append(paragraph_text)
+        body = "\n".join(body_lines).strip()
+        if len(body) < 8:
+            continue
+        variants = article_number_variants(title)
+        article_label = variants[-1] if variants else title
+        display_title = f"生活保護法 {article_label}{caption}"
+        refs = ["生活保護法", f"生活保護法{article_label}", f"法{article_label}"]
+        refs.extend(f"法{variant}" for variant in variants if f"法{variant}" not in refs)
+        items.append(
+            {
+                "id": f"生活保護法-{article_label}",
+                "title": display_title,
+                "chapter": "生活保護法",
+                "sourceType": "law",
+                "sourceUrl": f"https://laws.e-gov.go.jp/law/{LIFE_PROTECTION_LAW_ID}",
+                "body": body,
+                "references": refs[:8],
+            }
+        )
+    return items
+
+
 def main() -> None:
     text = extract_doc_text(SOURCE_DOC)
     TEXT_OUT.write_text(text, encoding="utf-8")
-    items = build_items(text)
+    case_items = build_items(text)
+    law_items = build_life_protection_law_items()
+    items = case_items + law_items
     payload = {
-        "source": SOURCE_DOC.name,
+        "source": f"{SOURCE_DOC.name} / 生活保護法（e-Gov）",
+        "sources": [SOURCE_DOC.name, "生活保護法（e-Gov法令検索）"],
         "itemCount": len(items),
+        "caseItemCount": len(case_items),
+        "lawItemCount": len(law_items),
         "items": items,
     }
     DATA_OUT.write_text(

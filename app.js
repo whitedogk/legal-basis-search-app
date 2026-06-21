@@ -10,7 +10,7 @@ const filters = [...document.querySelectorAll(".filter")];
 
 let activeFilter = "all";
 let selectedId = null;
-sourceNameEl.textContent = data.source;
+sourceNameEl.textContent = data.sources?.length ? data.sources.join(" / ") : data.source;
 data.items.forEach((item, index) => {
   item.viewId = String(index);
 });
@@ -45,6 +45,8 @@ const highlight = (text, terms) => {
 
 const hasFilter = (item) => {
   const refs = item.references || [];
+  if (activeFilter === "act") return item.sourceType === "law";
+  if (activeFilter === "case") return item.sourceType !== "law";
   if (activeFilter === "law") return refs.some((ref) => /法第|生活保護法|福祉法|施行規則|法律|告示|別表/.test(ref));
   if (activeFilter === "notice") return refs.some((ref) => /通知|社発/.test(ref));
   if (activeFilter === "qa") return refs.some((ref) => /問答/.test(ref));
@@ -54,10 +56,12 @@ const hasFilter = (item) => {
 const scoreItem = (item, terms) => {
   const title = normalize(item.title);
   const chapter = normalize(item.chapter);
+  const sourceType = normalize(item.sourceType);
   const refs = normalize((item.references || []).join(" "));
   const body = normalize(item.body);
   let score = 0;
   for (const term of terms) {
+    if (sourceType.includes(term)) score += 4;
     if (title.includes(term)) score += 16;
     if (refs.includes(term)) score += 12;
     if (chapter.includes(term)) score += 6;
@@ -141,7 +145,7 @@ const makeSummary = (item) => {
 const renderExplanation = (item) => {
   const summary = makeSummary(item);
   explanationEl.innerHTML = `
-    <p class="eyebrow">${escapeHtml(item.chapter || "章未分類")}</p>
+    <p class="eyebrow">${escapeHtml(item.chapter || "章未分類")}${item.sourceType === "law" ? " / e-Gov法令" : ""}</p>
     <h2>${escapeHtml(item.title)}</h2>
     <div class="explain-group">
       <h3>本文要約</h3>
@@ -162,6 +166,11 @@ const renderExplanation = (item) => {
     <div class="explain-group">
       <h3>本文</h3>
       <p class="explain-body">${escapeHtml(item.body)}</p>
+      ${
+        item.sourceUrl
+          ? `<p class="explain-text"><a href="${escapeHtml(item.sourceUrl)}" target="_blank" rel="noreferrer">e-Govで原文を開く</a></p>`
+          : ""
+      }
       <p class="explain-text">${escapeHtml(summary.note)}</p>
     </div>
   `;
@@ -198,7 +207,7 @@ const render = () => {
     if (item.viewId === selectedId) {
       card.classList.add("selected");
     }
-    node.querySelector(".chapter").textContent = item.chapter || "章未分類";
+    node.querySelector(".chapter").textContent = item.sourceType === "law" ? `${item.chapter} / e-Gov法令` : item.chapter || "章未分類";
     node.querySelector("h2").innerHTML = highlight(item.title, rawTerms);
     node.querySelector(".snippet").innerHTML = highlight(makeSnippet(item, rawTerms), rawTerms);
     node.querySelector(".body").innerHTML = highlight(item.body, rawTerms);
