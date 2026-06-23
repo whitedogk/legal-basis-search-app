@@ -187,6 +187,62 @@ input:focus {
   letter-spacing: 0;
 }
 
+.record-section {
+  display: grid;
+  gap: 10px;
+  padding: 2px 0 12px;
+}
+
+.record-section h2 {
+  margin: 10px 0 0;
+  font-size: 17px;
+  line-height: 1.45;
+  color: var(--accent-2);
+}
+
+.record-list {
+  display: grid;
+  gap: 8px;
+}
+
+.record-heading {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--paper);
+  color: var(--ink);
+  display: grid;
+  gap: 8px;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.record-heading:hover,
+.record-heading:focus-visible,
+.record-heading.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(15, 111, 95, 0.1);
+}
+
+.record-title {
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.record-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.record-snippet {
+  color: #303a35;
+  line-height: 1.7;
+}
+
 .refs {
   display: flex;
   flex-wrap: wrap;

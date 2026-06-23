@@ -161,6 +161,28 @@ const makeSummary = (item) => {
 };
 
 const renderExplanation = (item) => {
+  if (item.sourceType === "record") {
+    const refs = item.references?.length ? item.references : [];
+    explanationEl.innerHTML = `
+      <p class="eyebrow">${escapeHtml(sourceLabel(item))}</p>
+      <h2>${escapeHtml(item.title)}</h2>
+      <div class="explain-group">
+        <h3>関連法令・通知等</h3>
+        <div class="refs">
+          ${
+            refs.length
+              ? refs.map((ref) => `<span class="ref ${refClass(ref)}">${escapeHtml(displayRef(ref))}</span>`).join("")
+              : '<span class="ref">本文中に明示なし</span>'
+          }
+        </div>
+      </div>
+      <div class="explain-group">
+        <h3>調書参考事例</h3>
+        <p class="explain-body">${escapeHtml(item.body)}</p>
+      </div>
+    `;
+    return;
+  }
   const summary = makeSummary(item);
   explanationEl.innerHTML = `
     <p class="eyebrow">${escapeHtml(sourceLabel(item))}</p>
@@ -194,15 +216,93 @@ const renderExplanation = (item) => {
   `;
 };
 
+const renderRecordDirectory = (matches, rawTerms, rawQuery) => {
+  resultCountEl.textContent = `${matches.length}件`;
+  resultsEl.replaceChildren();
+  emptyEl.hidden = matches.length > 0;
+  if (matches.length === 0) {
+    emptyEl.querySelector("h2").textContent = "調書記録の候補がありません";
+    emptyEl.querySelector("p").textContent = "別の関連ワードで検索してください。";
+    return;
+  }
+
+  const groups = new Map();
+  matches.forEach(({ item }) => {
+    const key = item.chapter || "調書記録";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+
+  groups.forEach((items, groupName) => {
+    const section = document.createElement("section");
+    section.className = "record-section";
+    const heading = document.createElement("h2");
+    heading.textContent = groupName;
+    section.append(heading);
+
+    const list = document.createElement("div");
+    list.className = "record-list";
+    items.forEach((item) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "record-heading";
+      button.dataset.id = item.viewId;
+      if (item.viewId === selectedId) button.classList.add("selected");
+
+      const title = document.createElement("span");
+      title.className = "record-title";
+      title.innerHTML = highlight(item.title, rawTerms);
+      button.append(title);
+
+      const refs = item.references || [];
+      if (refs.length) {
+        const chips = document.createElement("span");
+        chips.className = "record-tags";
+        refs.slice(0, 4).forEach((ref) => {
+          const chip = document.createElement("span");
+          chip.className = `ref ${refClass(ref)}`;
+          chip.textContent = displayRef(ref);
+          chips.append(chip);
+        });
+        button.append(chips);
+      }
+
+      if (rawQuery) {
+        const snippet = document.createElement("span");
+        snippet.className = "record-snippet";
+        snippet.innerHTML = highlight(makeSnippet(item, rawTerms), rawTerms);
+        button.append(snippet);
+      }
+
+      button.addEventListener("click", () => {
+        selectedId = item.viewId;
+        renderExplanation(item);
+        document.querySelectorAll(".record-heading").forEach((buttonEl) => {
+          buttonEl.classList.toggle("selected", buttonEl.dataset.id === selectedId);
+        });
+      });
+      list.append(button);
+    });
+
+    section.append(list);
+    resultsEl.append(section);
+  });
+};
+
 const render = () => {
   const rawQuery = queryInput.value.trim();
   const rawTerms = rawQuery.split(/[ 　]+/).filter(Boolean);
   const terms = rawTerms.map(normalize);
-  const matches = data.items
+  const allMatches = data.items
     .map((item) => ({ item, score: rawQuery ? scoreItem(item, terms) : fallbackScore(item) }))
     .filter(({ item, score }) => score > 0 && hasFilter(item))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 80);
+    .sort((a, b) => (rawQuery ? b.score - a.score : Number(a.item.viewId) - Number(b.item.viewId)));
+  const matches = activeFilter === "record" ? allMatches : allMatches.slice(0, 80);
+
+  if (activeFilter === "record") {
+    renderRecordDirectory(matches, rawTerms, rawQuery);
+    return;
+  }
 
   resultCountEl.textContent = `${matches.length}件`;
   resultsEl.replaceChildren();

@@ -252,12 +252,20 @@ def find_references(text: str) -> list[str]:
 
 
 def find_record_references(text: str) -> list[str]:
-    refs = find_references(text)
-    return [
-        ref
-        for ref in refs
-        if re.search(r"法第|生活保護法|局第|局長|課長|次官|告示|医運|運用事例|別冊問答|都運用", ref)
-    ][:10]
+    refs: list[str] = []
+    seen: set[str] = set()
+    for bracket in re.findall(r"【([^】]+)】", text):
+        if re.search(r"法第|生活保護法|局第|局長|課長|次官|告示|医運|運用事例|別冊問答|都運用|課長問答|局長問答", bracket):
+            ref = normalize_spaces(bracket)
+            if ref not in seen:
+                seen.add(ref)
+                refs.append(ref)
+    for ref in find_references(text):
+        overlaps = any(existing.startswith(ref) or ref.startswith(existing) for existing in seen)
+        if re.search(r"法第|生活保護法|局第|局長|課長|次官|告示|医運|運用事例|別冊問答|都運用", ref) and ref not in seen and not overlaps:
+            seen.add(ref)
+            refs.append(ref)
+    return refs[:10]
 
 
 def strip_front_matter(text: str) -> str:
