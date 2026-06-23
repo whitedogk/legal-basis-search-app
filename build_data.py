@@ -5,10 +5,18 @@ import re
 import struct
 import urllib.request
 import xml.etree.ElementTree as ET
+from zipfile import ZipFile
 from pathlib import Path
+
+from pypdf import PdfReader
 
 
 SOURCE_DOC = Path(r"D:\document\ドーナドーナ\R6運用事例集全体版(目次付き).doc")
+SOURCE_PDF_URL = "https://665257b062be733.lolipop.jp/tokyoR710kaitei.pdf"
+SOURCE_PDF = Path("tokyoR710kaitei.pdf")
+RECORD_DOCX_SOURCE = Path(r"I:\AI\変更処理\引き写し用記録集(R080515時点） .docx")
+RECORD_DOCX = Path("record_examples.docx")
+RECORD_TEXT_OUT = Path("record_examples_extracted.txt")
 TEXT_OUT = Path("extracted.txt")
 DATA_OUT = Path("app-data.js")
 LIFE_PROTECTION_LAW_ID = "325AC0000000144"
@@ -112,6 +120,63 @@ def extract_doc_text(path: Path) -> str:
     return text.strip()
 
 
+def download_pdf_if_needed(path: Path) -> None:
+    if path.exists() and path.stat().st_size > 100_000:
+        return
+    request = urllib.request.Request(SOURCE_PDF_URL, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        path.write_bytes(response.read())
+
+
+def extract_pdf_text(path: Path) -> str:
+    reader = PdfReader(str(path))
+    parts: list[str] = []
+    for page_number, page in enumerate(reader.pages, start=1):
+        text = page.extract_text() or ""
+        parts.append(f"\n\n__PAGE_{page_number}__\n{text}")
+    text = "".join(parts)
+    text = re.sub(r"[\x00-\x08\x0b\x0e-\x1f]", "", text)
+    text = re.sub(r"\r+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r" +", " ", text)
+    return text.strip()
+
+
+def extract_source_text() -> tuple[str, str]:
+    download_pdf_if_needed(SOURCE_PDF)
+    if SOURCE_PDF.exists():
+        return extract_pdf_text(SOURCE_PDF), "生活保護運用事例集 令和７年１０月改訂版"
+    return extract_doc_text(SOURCE_DOC), SOURCE_DOC.name
+
+
+def ensure_record_docx() -> None:
+    if RECORD_DOCX.exists() and RECORD_DOCX.stat().st_size > 10_000:
+        return
+    if RECORD_DOCX_SOURCE.exists():
+        RECORD_DOCX.write_bytes(RECORD_DOCX_SOURCE.read_bytes())
+
+
+def extract_docx_paragraphs(path: Path) -> list[str]:
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    with ZipFile(path) as archive:
+        document_xml = archive.read("word/document.xml")
+    root = ET.fromstring(document_xml)
+    paragraphs: list[str] = []
+    for paragraph in root.findall(".//w:p", namespace):
+        parts: list[str] = []
+        for node in paragraph.iter():
+            if node.tag == f"{{{namespace['w']}}}t":
+                parts.append(node.text or "")
+            elif node.tag == f"{{{namespace['w']}}}tab":
+                parts.append("\t")
+            elif node.tag == f"{{{namespace['w']}}}br":
+                parts.append("\n")
+        text = "".join(parts).strip()
+        if text:
+            paragraphs.append(text)
+    return paragraphs
+
+
 QUESTION_RE = re.compile(r"^（問[０-９0-9]+(?:－[０-９0-9]+)*）\s*(.+)$")
 QUESTION_ANY_RE = re.compile(r"（問[０-９0-9]+(?:[－―ー-][０-９0-9]+)*）[ 　]*([^\n\t\r]{2,90})")
 CHAPTER_RE = re.compile(r"^第[０-９0-9一二三四五六七八九十]+[ 　].+")
@@ -186,10 +251,24 @@ def find_references(text: str) -> list[str]:
     return refs[:18]
 
 
+def find_record_references(text: str) -> list[str]:
+    refs = find_references(text)
+    return [
+        ref
+        for ref in refs
+        if re.search(r"法第|生活保護法|局第|局長|課長|次官|告示|医運|運用事例|別冊問答|都運用", ref)
+    ][:10]
+
+
 def strip_front_matter(text: str) -> str:
     """Drop the Word TOC and chapter guide before the first real Q&A item."""
-    match = re.search(r"(?m)^（問１－１）", text)
-    return text[match.start() :] if match else text
+    matches = list(re.finditer(r"(?m)^\s*（問１－１）", text))
+    for match in matches:
+        line_end = text.find("\n", match.start())
+        line = text[match.start() : line_end if line_end >= 0 else match.end() + 100]
+        if "..." not in line and "．" not in line and "__PAGE_" not in line:
+            return text[match.start() :]
+    return text[matches[-1].start() :] if matches else text
 
 
 def infer_chapter(title: str) -> str:
@@ -205,6 +284,8 @@ def clean_body(body: str) -> str:
         line = line.strip()
         if (
             not line
+            or line.startswith("__PAGE_")
+            or re.fullmatch(r"-\s*\d+\s*-", line)
             or "HYPERLINK" in line
             or "PAGEREF" in line
             or "MERGEFORMAT" in line
@@ -234,6 +315,115 @@ def is_searchable_body(body: str) -> bool:
     if "この章で扱う事項" in body or "HYPERLINK" in body or "PAGEREF" in body:
         return False
     return True
+
+
+RECORD_SUBHEADING_RE = re.compile(
+    r"^(局|法第|都運用|運用事例|告|医運|令和|平成|昭和|日割|最低生活費|収入額|収入充当額|"
+    r"要否判定|施設分|居宅分|事実関係|所見|結論|内訳|合\s*計|期間|実際の受給額|課長|別冊|問)"
+)
+
+
+def normalize_record_heading(line: str) -> str:
+    heading = line.strip()
+    heading = re.sub(r"^【+", "【", heading)
+    heading = re.sub(r"】+$", "】", heading)
+    return heading
+
+
+def is_record_heading(line: str) -> bool:
+    heading = normalize_record_heading(line)
+    if not re.fullmatch(r"【[^】]{2,140}】", heading):
+        return False
+    inner = heading.strip("【】").strip()
+    if RECORD_SUBHEADING_RE.search(inner):
+        return False
+    if re.search(r"^(参考|関連|算定|式|額|合計)$", inner):
+        return False
+    return True
+
+
+def is_record_category(line: str) -> bool:
+    normalized = line.strip("＜＞[]［］ ")
+    if not normalized or normalized.startswith("【"):
+        return False
+    if len(normalized) > 40:
+        return False
+    if normalized.endswith("関係") or normalized.endswith("記録"):
+        return True
+    return normalized in {
+        "教育扶助",
+        "生業扶助",
+        "一時扶助　参考ケース記録",
+        "引き写しケース記録　稼働収入",
+        "年金・手当等の認定（追給あり年度）",
+        "非稼働収入の認定",
+        "支払方法の変更",
+        "その他の記録",
+    }
+
+
+def build_record_items() -> tuple[list[dict[str, object]], str]:
+    ensure_record_docx()
+    if not RECORD_DOCX.exists():
+        return [], ""
+    paragraphs = extract_docx_paragraphs(RECORD_DOCX)
+    RECORD_TEXT_OUT.write_text("\n".join(paragraphs), encoding="utf-8")
+
+    items: list[dict[str, object]] = []
+    current_category = "調書記録"
+    current_title = ""
+    current_lines: list[str] = []
+    current_index = 0
+
+    def finish_current() -> None:
+        nonlocal current_index, current_title, current_lines
+        body = "\n".join(line.strip() for line in current_lines if line.strip()).strip()
+        if not current_title or len(body) < 20:
+            return
+        current_index += 1
+        title = current_title.strip()
+        refs = find_record_references(f"{title}\n{body}")
+        items.append(
+            {
+                "id": f"調書記録-{current_index:04d}",
+                "title": title,
+                "chapter": current_category,
+                "sourceType": "record",
+                "sourceUrl": "",
+                "body": body,
+                "references": refs,
+            }
+        )
+
+    for index, raw_line in enumerate(paragraphs):
+        line = normalize_spaces(raw_line)
+        if not line:
+            continue
+        if line == "引き写し用記録集":
+            continue
+        next_line = normalize_spaces(paragraphs[index + 1]) if index + 1 < len(paragraphs) else ""
+        if is_record_category(line) and is_record_heading(next_line):
+            finish_current()
+            current_category = line.strip("＜＞[]［］ ")
+            current_title = ""
+            current_lines = []
+            continue
+        if is_record_heading(line):
+            finish_current()
+            current_title = normalize_record_heading(line).strip("【】")
+            current_lines = []
+            continue
+        if not current_title and len(line) <= 40:
+            current_category = line.strip("＜＞[]［］")
+            continue
+        if current_title:
+            if len(line) <= 40 and line.endswith("関係") and not current_lines:
+                current_category = line
+            else:
+                current_lines.append(raw_line)
+
+    finish_current()
+    return items, RECORD_DOCX.name
 
 
 def build_items(text: str) -> list[dict[str, object]]:
@@ -388,17 +578,22 @@ def build_life_protection_law_items() -> list[dict[str, object]]:
 
 
 def main() -> None:
-    text = extract_doc_text(SOURCE_DOC)
+    text, case_source = extract_source_text()
     TEXT_OUT.write_text(text, encoding="utf-8")
     case_items = build_items(text)
     law_items = build_life_protection_law_items()
-    items = case_items + law_items
+    record_items, record_source = build_record_items()
+    items = case_items + law_items + record_items
+    sources = [case_source, "生活保護法（e-Gov法令検索）"]
+    if record_source:
+        sources.append(f"調書記録事例（{record_source}）")
     payload = {
-        "source": f"{SOURCE_DOC.name} / 生活保護法（e-Gov）",
-        "sources": [SOURCE_DOC.name, "生活保護法（e-Gov法令検索）"],
+        "source": " / ".join(sources),
+        "sources": sources,
         "itemCount": len(items),
         "caseItemCount": len(case_items),
         "lawItemCount": len(law_items),
+        "recordItemCount": len(record_items),
         "items": items,
     }
     DATA_OUT.write_text(

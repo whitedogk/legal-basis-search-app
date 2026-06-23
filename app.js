@@ -46,7 +46,8 @@ const highlight = (text, terms) => {
 const hasFilter = (item) => {
   const refs = item.references || [];
   if (activeFilter === "act") return item.sourceType === "law";
-  if (activeFilter === "case") return item.sourceType !== "law";
+  if (activeFilter === "case") return item.sourceType === "case";
+  if (activeFilter === "record") return item.sourceType === "record";
   if (activeFilter === "law") return refs.some((ref) => /法第|生活保護法|福祉法|施行規則|法律|告示|別表/.test(ref));
   if (activeFilter === "notice") return refs.some((ref) => /通知|社発/.test(ref));
   if (activeFilter === "qa") return refs.some((ref) => /問答/.test(ref));
@@ -92,6 +93,14 @@ const displayRef = (ref) => {
   }
   return output;
 };
+
+const sourceLabel = (item) => {
+  if (item.sourceType === "law") return `${item.chapter} / e-Gov法令`;
+  if (item.sourceType === "record") return `${item.chapter || "調書記録"} / 調書記録事例`;
+  return item.chapter || "章未分類";
+};
+
+const referenceHeading = (item) => (item.sourceType === "record" ? "関連根拠候補" : "根拠法令・通知");
 
 const plainText = (value) => normalizeSpaces((value || "").replace(/[「」『』]/g, ""));
 
@@ -145,14 +154,14 @@ const makeSummary = (item) => {
 const renderExplanation = (item) => {
   const summary = makeSummary(item);
   explanationEl.innerHTML = `
-    <p class="eyebrow">${escapeHtml(item.chapter || "章未分類")}${item.sourceType === "law" ? " / e-Gov法令" : ""}</p>
+    <p class="eyebrow">${escapeHtml(sourceLabel(item))}</p>
     <h2>${escapeHtml(item.title)}</h2>
     <div class="explain-group">
-      <h3>本文要約</h3>
+      <h3>${item.sourceType === "record" ? "記録要約" : "本文要約"}</h3>
       <p class="explain-text">${escapeHtml(summary.summary)}</p>
     </div>
     <div class="explain-group">
-      <h3>根拠法令・通知</h3>
+      <h3>${escapeHtml(referenceHeading(item))}</h3>
       <div class="refs">
         ${
           summary.refs.length
@@ -207,10 +216,11 @@ const render = () => {
     if (item.viewId === selectedId) {
       card.classList.add("selected");
     }
-    node.querySelector(".chapter").textContent = item.sourceType === "law" ? `${item.chapter} / e-Gov法令` : item.chapter || "章未分類";
+    node.querySelector(".chapter").textContent = sourceLabel(item);
     node.querySelector("h2").innerHTML = highlight(item.title, rawTerms);
     node.querySelector(".snippet").innerHTML = highlight(makeSnippet(item, rawTerms), rawTerms);
     node.querySelector(".body").innerHTML = highlight(item.body, rawTerms);
+    node.querySelector(".ref-label").textContent = referenceHeading(item);
     const refsEl = node.querySelector(".refs");
     const refs = item.references?.length ? item.references : ["本文中に明示なし"];
     refs.forEach((ref) => {
