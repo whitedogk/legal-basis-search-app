@@ -58,11 +58,13 @@ const scoreItem = (item, terms) => {
   const title = normalize(item.title);
   const chapter = normalize(item.chapter);
   const sourceType = normalize(item.sourceType);
+  const source = normalize(sourceLabel(item));
   const refs = normalize((item.references || []).join(" "));
   const body = normalize(item.body);
   let score = 0;
   for (const term of terms) {
     if (sourceType.includes(term)) score += 4;
+    if (source.includes(term)) score += 10;
     if (title.includes(term)) score += 16;
     if (refs.includes(term)) score += 12;
     if (chapter.includes(term)) score += 6;
@@ -98,6 +100,13 @@ const sourceLabel = (item) => {
   if (item.sourceType === "law") return `${item.chapter} / e-Gov法令`;
   if (item.sourceType === "record") return `${item.chapter || "調書記録"} / 調書記録事例`;
   return item.chapter || "章未分類";
+};
+
+const fallbackScore = (item) => {
+  if (activeFilter === "record" && item.sourceType === "record") return 1;
+  if (activeFilter === "case" && item.sourceType === "case") return 1;
+  if (activeFilter === "act" && item.sourceType === "law") return 1;
+  return 0;
 };
 
 const referenceHeading = (item) => (item.sourceType === "record" ? "関連根拠候補" : "根拠法令・通知");
@@ -189,13 +198,11 @@ const render = () => {
   const rawQuery = queryInput.value.trim();
   const rawTerms = rawQuery.split(/[ 　]+/).filter(Boolean);
   const terms = rawTerms.map(normalize);
-  const matches = rawQuery
-    ? data.items
-        .map((item) => ({ item, score: scoreItem(item, terms) }))
-        .filter(({ item, score }) => score > 0 && hasFilter(item))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 80)
-    : [];
+  const matches = data.items
+    .map((item) => ({ item, score: rawQuery ? scoreItem(item, terms) : fallbackScore(item) }))
+    .filter(({ item, score }) => score > 0 && hasFilter(item))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 80);
 
   resultCountEl.textContent = `${matches.length}件`;
   resultsEl.replaceChildren();
@@ -205,8 +212,9 @@ const render = () => {
     emptyEl.querySelector("h2").textContent = "該当する候補がありません";
     emptyEl.querySelector("p").textContent = "別の表記や短い単語で検索してみてください。";
   } else if (!rawQuery) {
-    emptyEl.querySelector("h2").textContent = "関連ワードを入力してください";
-    emptyEl.querySelector("p").textContent = "問のタイトル、本文、根拠候補をまとめて検索します。";
+    emptyEl.querySelector("h2").textContent = activeFilter === "all" ? "関連ワードを入力してください" : "該当する候補がありません";
+    emptyEl.querySelector("p").textContent =
+      activeFilter === "all" ? "問のタイトル、本文、根拠候補をまとめて検索します。" : "別の絞り込み、または関連ワードで検索してください。";
   }
 
   for (const { item } of matches) {
