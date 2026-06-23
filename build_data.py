@@ -268,6 +268,48 @@ def find_record_references(text: str) -> list[str]:
     return refs[:10]
 
 
+PERSON_ROLE_REPLACEMENTS = [
+    (re.compile(r"担当[ 　]*[ＣC][ＷW]"), "CW"),
+    (re.compile(r"[ァ-ヶー]{2,8}[ 　]*[ＳS][ＷW]"), "SW"),
+    (re.compile(r"[0-9０-９]+係[一-龥ぁ-んァ-ヶー]{1,8}[ 　]*[ＣC][ＷW]"), "CW"),
+    (re.compile(r"(^|[、。 　はがをにへと])(?:担当|[一-龥ぁ-んァ-ヶー]{1,8})[ 　]*[ＣC][ＷW]"), r"\1CW"),
+    (re.compile(r"(^|[、。 　はがをにへと])(?:担当|[一-龥ぁ-んァ-ヶー]{1,8})[ 　]*[ＳS][ＷW]"), r"\1SW"),
+    (re.compile(r"(^|[、。 　はがをにへとの])(?:担当|[一-龥ぁ-んァ-ヶー]{1,8})[ 　]*相談員"), r"\1相談員"),
+    (re.compile(r"[一-龥]{1,4}[ 　]*[ＣC][ＷW](?=が|の|に|、|。|[ 　]|$)"), "CW"),
+    (re.compile(r"[一-龥]{1,4}[ 　]*[ＳS][ＷW](?=が|の|に|、|。|[ 　]|$)"), "SW"),
+    (re.compile(r"[一-龥]{1,4}[ 　]*相談員(?=が|の|に|、|。|[ 　]|$)"), "相談員"),
+]
+
+HOSPITAL_NAME_RE = re.compile(
+    r"[一-龥々ぁ-んァ-ヶーA-Za-zＡ-Ｚａ-ｚ0-9０-９・･（）()]+"
+    r"(?:医科大学病院|大学病院|総合病院|医療センター|病院|医院|クリニック|診療所)"
+)
+
+FACILITY_NAME_PATTERNS = [
+    re.compile(r"[一-龥々ぁ-んァ-ヶーA-Za-zＡ-Ｚａ-ｚ0-9０-９・･（）()]+（老健）"),
+    re.compile(r"(?:養護老人ホーム|有料老人ホーム|特別養護老人ホーム|グループホーム|介護老人保健施設)[一-龥々ぁ-んァ-ヶーA-Za-zＡ-Ｚａ-ｚ0-9０-９・･（）()]*"),
+    re.compile(r"[一-龥々ぁ-んァ-ヶーA-Za-zＡ-Ｚａ-ｚ0-9０-９・･]{2,}(?:園|荘|寮|ホーム|の里|の丘|丘)"),
+    re.compile(r"[一-龥々ぁ-んァ-ヶーA-Za-zＡ-Ｚａ-ｚ0-9０-９・･]{2,}(?:センター)"),
+]
+
+
+def sanitize_record_text(text: str) -> str:
+    """Remove identifying names from record examples before publishing them."""
+    sanitized = text
+    for pattern, replacement in PERSON_ROLE_REPLACEMENTS:
+        sanitized = pattern.sub(replacement, sanitized)
+    sanitized = re.sub(r"（[^（）]{0,12}[一-龥]{1,4}[ 　]+[一-龥]{1,4}[^（）]{0,12}）", "", sanitized)
+    sanitized = re.sub(r"（[一-龥ぁ-んァ-ヶー]{1,8}）", "", sanitized)
+    sanitized = re.sub(r"(⇒\s*)[一-龥ぁ-んァ-ヶー]{1,5}[ 　]+[一-龥ぁ-んァ-ヶー]{1,5}", r"\1", sanitized)
+    sanitized = HOSPITAL_NAME_RE.sub("病院", sanitized)
+    for pattern in FACILITY_NAME_PATTERNS:
+        sanitized = pattern.sub("施設", sanitized)
+    sanitized = re.sub(r"(施設|病院)（(?:施設|病院)）", r"\1", sanitized)
+    sanitized = re.sub(r"(施設|病院)(?:施設|病院)+", r"\1", sanitized)
+    sanitized = re.sub(r"[ 　]+([、。，．）])", r"\1", sanitized)
+    return sanitized.strip()
+
+
 def strip_front_matter(text: str) -> str:
     """Drop the Word TOC and chapter guide before the first real Q&A item."""
     matches = list(re.finditer(r"(?m)^\s*（問１－１）", text))
@@ -389,8 +431,10 @@ def build_record_items() -> tuple[list[dict[str, object]], str]:
         if not current_title or len(body) < 20:
             return
         current_index += 1
-        title = current_title.strip()
-        refs = find_record_references(f"{title}\n{body}")
+        raw_title = current_title.strip()
+        refs = find_record_references(f"{raw_title}\n{body}")
+        title = sanitize_record_text(raw_title)
+        body = sanitize_record_text(body)
         items.append(
             {
                 "id": f"調書記録-{current_index:04d}",
